@@ -1,135 +1,116 @@
-# EcoSphere — Environmental Module Backend
+# EcoSphere Backend — Auth + Governance Module + Integration Layer
 
-Node.js / Express / MongoDB backend for the **Environmental** pillar of the EcoSphere ESG
-Management Platform. This is the API-only layer that the existing React frontend
-(`Environmental.jsx`, `Charts.jsx`, etc.) will consume via Axios — no frontend code was touched.
+Node.js / Express / MongoDB backend for the EcoSphere ESG platform. Built to plug into
+the existing EcoSphere React frontend and sit alongside the Environmental and Social
+module backends built by the rest of the team.
 
-## Folder Structure
-
-```
-backend/
-├── controllers/
-│   └── environmentController.js
-├── models/
-│   ├── Department.js
-│   ├── CarbonRecord.js
-│   └── Goal.js                  (SustainabilityGoal collection)
-├── routes/
-│   └── environmentRoutes.js
-├── config/
-│   └── db.js
-├── seed/
-│   └── seedData.js              (sample data matching the frontend's mock shapes)
-├── postman/
-│   └── EcoSphere-Environment.postman_collection.json
-├── server.js
-├── package.json
-└── .env.example
-```
+## Stack
+Node.js · Express.js · MongoDB · Mongoose · JWT · bcryptjs · dotenv · cors · axios
 
 ## Setup
 
 ```bash
 cd backend
 npm install
-cp .env.example .env   # then edit MONGO_URI / PORT / CLIENT_ORIGIN as needed
-npm run seed            # optional: populate sample departments, carbon records, goals
-npm run dev              # or `npm start`
+cp .env.example .env   # then fill in MONGO_URI and JWT_SECRET
+npm run seed            # optional: creates a demo admin + sample governance data
+npm run dev              # starts on http://localhost:5000
 ```
 
-Server boots on `http://localhost:5000` by default. CORS is enabled for the origin set in
-`CLIENT_ORIGIN` (defaults to `*` if unset — set it to your Vite dev server, e.g.
-`http://localhost:5173`, for production use).
+Demo admin login after seeding: **admin@ecosphere.com / Admin@123**
 
-## Data Model
-
-**Department**
-`departmentName` (unique), `manager`, `location`, `employeeCount`, `createdAt`
-
-**CarbonRecord**
-`departmentId` (ref → Department), `month`, `year`, `electricityConsumption`, `fuelConsumption`,
-`travelEmission`, `wasteEmission`, `totalEmission` (auto-calculated), `createdAt`
-
-`totalEmission = electricityConsumption + fuelConsumption + travelEmission + wasteEmission`
-— computed automatically in a Mongoose `pre('validate')` hook, so it's always kept in sync
-whether the record is created or edited.
-
-**Goal** (stored in the `sustainabilitygoals` collection)
-`goalName`, `targetReduction`, `currentReduction`, `deadline` (must be a future date),
-`status` (`Pending` | `In Progress` | `Completed`)
-
-## API Reference
-
-All routes are mounted under `/api`.
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/departments` | List all departments |
-| POST | `/departments` | Create a department |
-| PUT | `/departments/:id` | Update a department |
-| DELETE | `/departments/:id` | Delete a department (blocked if it has carbon records) |
-| GET | `/carbon` | List carbon records (filter: `?departmentId=&month=&year=`) |
-| POST | `/carbon` | Create a carbon record (auto-computes `totalEmission`) |
-| PUT | `/carbon/:id` | Update a carbon record (recomputes `totalEmission`) |
-| DELETE | `/carbon/:id` | Delete a carbon record |
-| GET | `/goals` | List sustainability goals (filter: `?status=`) |
-| POST | `/goals` | Create a goal |
-| PUT | `/goals/:id` | Update a goal |
-| DELETE | `/goals/:id` | Delete a goal |
-| GET | `/dashboard/environment` | Total/monthly emission, best/worst department, goal progress, reduction % |
-| GET | `/reports/environment` | Monthly data, department ranking, average/highest/lowest emission (filter: `?year=`) |
-| GET | `/charts/environment` | Line/bar/pie chart JSON (filter: `?year=`) |
-
-All responses follow `{ success, data | message }`. Validation errors return `400`, not-found
-returns `404`, conflicts (duplicate names, existing linked records) return `409`.
-
-### Sample response — `GET /dashboard/environment`
-
-```json
-{
-  "success": true,
-  "data": {
-    "totalEmission": 1842,
-    "monthlyEmission": 270,
-    "bestDepartment": { "departmentId": "...", "departmentName": "Sales & Marketing", "totalEmission": 18 },
-    "worstDepartment": { "departmentId": "...", "departmentName": "Manufacturing", "totalEmission": 145 },
-    "goalProgress": [
-      { "goalName": "Reduce Manufacturing Emissions 20%", "status": "In Progress", "targetReduction": 200, "currentReduction": 120, "progressPercent": 60 }
-    ],
-    "carbonReductionPercent": 58.24
-  }
-}
+## Folder Structure
+```
+backend/
+  config/db.js                 MongoDB connection
+  controllers/                 Route handler logic
+  routes/                      Express routers
+  middleware/                  auth, admin, 404, global error handler
+  models/                      User, Policy, Audit, ComplianceIssue
+  utils/                       token helper, async wrapper, error class, seed script,
+                                 integration client for Environmental/Social modules
+  server.js                    App entry point
 ```
 
-### Sample response — `GET /charts/environment`
+## Authentication
+- `POST /api/auth/register` — name, email, password, department (role defaults to `employee`)
+- `POST /api/auth/login` — email, password → returns JWT + user
+- `POST /api/auth/logout` — (protected) client should discard the token
+- `GET /api/auth/profile` — (protected) current user's profile
 
-```json
-{
-  "success": true,
-  "data": {
-    "lineChart": { "labels": ["January", "February", "..."], "data": [420, 405, "..."] },
-    "barChart": { "labels": ["Manufacturing", "Logistics", "..."], "data": [145, 98, "..."] },
-    "pieChart": { "labels": ["Electricity", "Fuel", "Travel", "Waste"], "data": [820, 456, 364, 202] }
-  }
-}
-```
+Send the JWT as `Authorization: Bearer <token>` on all protected routes.
+Roles: `admin`, `employee`. Admin-only actions (create/update/delete policies & audits,
+delete compliance issues) are enforced via the `adminOnly` middleware.
 
-This directly maps onto `Charts.jsx`'s `LineChart` / `BarChart` components in the existing
-frontend — swap the mock imports in `carbonData.js` for Axios calls to these endpoints.
+## Governance Module
 
-## Validation Rules Implemented
+| Resource | Routes |
+|---|---|
+| Policies | `GET/POST /api/policies`, `GET/PUT/DELETE /api/policies/:id` |
+| Audits | `GET/POST /api/audits`, `GET/PUT/DELETE /api/audits/:id` |
+| Compliance Issues | `GET/POST /api/issues`, `GET/PUT/DELETE /api/issues/:id` |
 
-- No empty required fields on any Create/Update
-- All four emission values must be numeric and `>= 0`
-- A `CarbonRecord.departmentId` must reference an existing `Department`
-- A `Goal.deadline` must be a future date (enforced both at the schema level and in the
-  controller so updates are checked before hitting the DB)
-- Duplicate department names and duplicate (department + month + year) carbon records are
-  rejected with `409 Conflict`
-- A `Department` can't be deleted while it still has linked `CarbonRecord`s
+List endpoints support query filters, e.g. `GET /api/policies?department=IT&status=Active`.
 
-## Testing
+## Dashboard & Reports
 
-Import `postman/EcoSphere-Environment.postman_collection.json` into Postman. It includes every
-route with example bodies and collection variables (`departmentId`, `carbonId`, `goalId`) you
-can fill in as you create records.
+- `GET /api/dashboard/governance` — policy count, completed/pending audits, open/resolved issues
+- `GET /api/reports/governance` — policy summary, audit summary (incl. average score), compliance summary by severity
+- `GET /api/dashboard/overview` — aggregates governance + environment + social in one call
+
+## Integration with the Environmental & Social Modules
+
+This service proxies the other two modules so the frontend only needs one base URL:
+
+- `GET /api/dashboard/environment`, `GET /api/reports/environment`
+- `GET /api/dashboard/social`, `GET /api/leaderboard`, `GET /api/activities`
+
+Set `ENV_MODULE_API_URL` and `SOCIAL_MODULE_API_URL` in `.env` to point at wherever those
+modules are actually running (same server if all three teammates mount routes on one
+Express app, or a different port/URL if they're deployed separately). If a module isn't
+reachable, the proxy returns `502` with an `error` message instead of crashing — so the
+dashboard degrades gracefully rather than breaking the whole page.
+
+## Connecting the Frontend
+
+The uploaded frontend currently uses static mock data in `src/data/*.js` (per its own
+README) and has no `axios` calls yet. To wire it up:
+
+1. `npm install axios` in the frontend project.
+2. Add `VITE_API_URL=http://localhost:5000/api` to a `.env` file in the frontend root.
+3. Copy `frontend-integration/api.js` (included alongside this backend) into the
+   frontend at `src/api/client.js` — it's a ready-to-use axios instance with JWT
+   attach/refresh-on-401 handling, plus commented examples for the Login page and a
+   data page.
+4. Replace each page's static import (e.g. `import { governanceData } from "../../data/governanceData"`)
+   with a `useEffect` + `api.get(...)` call, matching the response shapes documented above.
+
+**Note:** only the frontend's config files (`README.md`, `package.json`, `vite.config.js`,
+`index.html`) were provided for this task — not the actual `src/` source (pages,
+components, data files). Steps 1–4 above are ready to apply directly once you have
+access to `src/pages/Governance`, `src/pages/Login`, etc.
+
+## Middleware
+- `protect` — verifies JWT, attaches `req.user`
+- `adminOnly` / `authorize(...roles)` — role-based route guards
+- `notFound` — 404 handler for unmatched routes
+- `errorHandler` — global error handler (Mongoose CastError/ValidationError/duplicate-key,
+  JWT errors, and generic `ApiError` all normalized to a consistent JSON shape)
+
+## Deployment
+1. Set `NODE_ENV=production` and a real `MONGO_URI` (MongoDB Atlas) in `.env`.
+2. Build the frontend: `npm run build` (produces `frontend/dist`).
+3. `server.js` already serves `frontend/dist` as static files and falls back to
+   `index.html` for client-side routing when `NODE_ENV=production` — deploy the
+   `backend/` folder with the built frontend one level up as `frontend/dist`
+   (adjust the path in `server.js` if your repo layout differs).
+4. Start with `npm start`.
+
+## Testing Checklist
+- [ ] Register + login return a valid JWT
+- [ ] Protected routes reject requests without a token (401)
+- [ ] Admin-only routes reject non-admin tokens (403)
+- [ ] CRUD works for policies, audits, and compliance issues
+- [ ] `/api/dashboard/governance` and `/api/reports/governance` return correct aggregates
+- [ ] CORS allows the frontend origin set in `CLIENT_ORIGIN`
+- [ ] Environment/Social proxy routes degrade gracefully if those services are down
